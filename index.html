@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ตรวจจับโรคใบทุเรียน (Live Overlay)</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; }
+        
+        /* *** สไตล์สำหรับ Video และ Canvas ซ้อนทับกัน *** */
+        .video-container { 
+            position: relative; 
+            width: 100%; 
+            max-width: 600px; 
+            margin: 10px auto;
+        }
+        #video-stream {
+            width: 100%; 
+            height: auto;
+            display: block; /* สำคัญ: เพื่อไม่ให้มีช่องว่างด้านล่างวิดีโอ */
+            border: 1px solid #007bff;
+        }
+        #overlay-canvas {
+            position: absolute; /* ทำให้ Canvas ซ้อนทับ */
+            top: 0;
+            left: 0;
+            width: 100%; 
+            height: 100%; 
+            z-index: 10; /* ให้ Canvas อยู่ด้านบน */
+            pointer-events: none; /* ทำให้คลิกผ่าน Canvas ไปที่วิดีโอได้ */
+        }
+        /* *** สิ้นสุดสไตล์การซ้อนทับ *** */
+
+        #output-image { display: none; } /* ซ่อนรูปผลลัพธ์เก่าทิ้ง */
+        .loading { display: none; color: blue; font-weight: bold; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ตรวจจับโรคใบทุเรียนแบบ Real-Time</h1>
+        
+        <div class="video-container" id="video-wrapper">
+            <video id="video-stream" autoplay playsinline></video>
+            <canvas id="overlay-canvas"></canvas> </div>
+        
+        <button id="start-camera-btn" onclick="startCamera()">เปิดกล้องและตรวจจับ</button>
+        <button id="control-btn" onclick="stopRealTimeDetection()" style="display:none;">กำลังตรวจจับเรียลไทม์ (กดเพื่อหยุด)</button>
+
+        <p id="detection-info">รอการเปิดกล้อง...</p>
+
+        <div id="results" style="display:none;">
+            <img id="output-image" src="" alt="ผลลัพธ์การตรวจจับ">
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('video-stream');
+        const overlayCanvas = document.getElementById('overlay-canvas');
+        const videoWrapper = document.getElementById('video-wrapper');
+        const context = overlayCanvas.getContext('2d'); // Context สำหรับวาด
+        const startButton = document.getElementById('start-camera-btn');
+        const controlButton = document.getElementById('control-btn');
+        const detectionInfo = document.getElementById('detection-info');
+
+        let detectionIntervalId = null; 
+        const DETECT_INTERVAL_MS = 100; // แนะนำ 2000ms เพื่อให้ทันกับ 640x640 YOLOv8
+        let isProcessing = false; 
+
+        // *** สำคัญ: แก้ไข URL นี้ตาม IP Address ของเครื่องคอมพิวเตอร์คุณ ***
+        const API_URL = 'https://unintroductory-stanford-preconversational.ngrok-free.dev/detect_disease'; 
+
+        // 0. ปรับขนาด Canvas เมื่อวิดีโอเริ่มโหลด
+        video.addEventListener('loadedmetadata', () => {
+            const ratio = video.videoWidth / video.videoHeight;
+            const containerWidth = videoWrapper.offsetWidth; // ความกว้างของพื้นที่แสดงผล
+            const containerHeight = containerWidth / ratio;
+            
+            // กำหนดความสูงของ Container เพื่อให้ Canvas และ Video ซ้อนทับกันพอดี
+            videoWrapper.style.height = `${containerHeight}px`;
+
+            // กำหนดขนาดจริงของ Canvas ให้เท่ากับความละเอียดของวิดีโอ
+            overlayCanvas.width = video.videoWidth;
+            overlayCanvas.height = video.videoHeight;
+        });
+
+        // 1. เปิดกล้อง
+        function startCamera() {
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } }) 
+                    .then(stream => {
+                        video.srcObject = stream;
+                        video.play();
+                        startButton.style.display = 'none';
+                        controlButton.textContent = 'กำลังตรวจจับเรียลไทม์ (กดเพื่อหยุด)';
+                        controlButton.style.display = 'block';
+                        startRealTimeDetection(); 
+                    })
+                    .catch(error => {
+                        detectionInfo.textContent = 'ไม่สามารถเข้าถึงกล้องได้: ' + error.name;
+                        console.error("Error accessing camera:", error);
+                    });
+            } else {
+                detectionInfo.textContent = 'เบราว์เซอร์ไม่รองรับการเข้าถึงกล้อง (WebRTC)';
+            }
+        }
+        
+        // 2. เริ่มการตรวจจับแบบซ้ำ
+        function startRealTimeDetection() {
+            if (detectionIntervalId === null) {
+                controlButton.onclick = stopRealTimeDetection;
+                controlButton.textContent = 'กำลังตรวจจับเรียลไทม์ (กดเพื่อหยุด)';
+                
+                detectionIntervalId = setInterval(captureAndDetectEveryFrame, DETECT_INTERVAL_MS);
+                detectionInfo.textContent = `เริ่มการตรวจจับเรียลไทม์ ทุก ${DETECT_INTERVAL_MS} ms...`;
+            }
+        }
+
+        // 3. หยุดการตรวจจับแบบซ้ำ
+        function stopRealTimeDetection() {
+            if (detectionIntervalId !== null) {
+                clearInterval(detectionIntervalId);
+                detectionIntervalId = null;
+                isProcessing = false; 
+                detectionInfo.textContent = 'หยุดการตรวจจับเรียลไทม์แล้ว';
+                controlButton.textContent = 'หยุดแล้ว (กดเพื่อเริ่มใหม่)';
+                controlButton.onclick = startRealTimeDetection;
+                
+                context.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height); // ล้างกรอบที่วาดไว้
+            }
+        }
+
+        // 4. ฟังก์ชันหลัก: จับภาพและส่ง API
+        async function captureAndDetectEveryFrame() {
+            if (isProcessing) {
+                return; 
+            }
+            isProcessing = true; 
+
+            if (video.srcObject === null) {
+                stopRealTimeDetection();
+                isProcessing = false; 
+                return;
+            }
+            
+            detectionInfo.textContent = 'กำลังประมวลผลเฟรม...'; 
+            
+            // ใช้ Canvas ชั่วคราวเพื่อจับภาพเฟรมสำหรับส่ง API 
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = video.videoWidth;
+            tempCanvas.height = video.videoHeight;
+            const tempContext = tempCanvas.getContext('2d');
+            tempContext.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+
+
+            tempCanvas.toBlob(async (blob) => {
+                const formData = new FormData();
+                formData.append('file', blob, 'frame.jpeg');
+
+                try {
+                    const response = await fetch(API_URL, {
+                        method: 'POST',
+                        body: formData,
+                    });
+
+                    const data = await response.json();
+                    isProcessing = false; 
+
+                    if (data.status === 'success') {
+                        // *** วาดผลลัพธ์ทับลงบน Canvas ***
+                        drawDetections(data.detections, data.original_width, data.original_height);
+                        
+                        const count = data.detections_count || 0;
+                        detectionInfo.textContent = `ตรวจพบ ${count} รายการโรค/ความผิดปกติ`;
+                        
+                    } else {
+                        // ถ้าเกิดข้อผิดพลาด YOLOv8 prediction failed
+                        context.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height); // ล้างกรอบเก่าออก
+                        detectionInfo.textContent = 'ข้อผิดพลาด API: ' + (data.error || 'ไม่ทราบ');
+                    }
+
+                } catch (error) {
+                    stopRealTimeDetection(); 
+                    isProcessing = false;
+                    detectionInfo.textContent = 'หยุดการเชื่อมต่อ: ไม่สามารถติดต่อเซิร์ฟเวอร์ได้';
+                    console.error('Fetch Error:', error);
+                }
+            }, 'image/jpeg', 0.6); // ลดคุณภาพ JPEG เหลือ 60% เพื่อให้ส่งข้อมูลเร็วขึ้น
+        }
+        
+        // 5. ฟังก์ชันสำหรับวาด Bounding Box ลงบน Canvas
+        function drawDetections(detections, imgWidth, imgHeight) {
+            context.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height); // ล้างกรอบเก่า
+            
+            // BBox data มาจากภาพที่ส่งไปประมวลผล (imgWidth/imgHeight)
+            // Canvas ที่เราวาดมีขนาดเท่ากับวิดีโอต้นฉบับ (overlayCanvas.width/height)
+            const scaleX = overlayCanvas.width / imgWidth;
+            const scaleY = overlayCanvas.height / imgHeight;
+
+            detections.forEach(detection => {
+                const [x1, y1, x2, y2] = detection.bbox;
+                const conf = detection.conf;
+                const name = detection.name;
+                
+                // ปรับขนาดพิกัด BBox ให้เข้ากับขนาด Canvas
+                const drawX = x1 * scaleX;
+                const drawY = y1 * scaleY;
+                const drawW = (x2 - x1) * scaleX;
+                const drawH = (y2 - y1) * scaleY;
+
+                // วาดกรอบ
+                context.strokeStyle = '#FF0000'; // สีแดง
+                context.lineWidth = 3;
+                context.strokeRect(drawX, drawY, drawW, drawH);
+
+                // วาดข้อความ
+                context.fillStyle = '#FF0000'; 
+                context.font = 'bold 16px Arial';
+                const label = `${name} (${(conf * 100).toFixed(0)}%)`;
+                
+                // วาดพื้นหลังข้อความสีทึบ
+                const textWidth = context.measureText(label).width;
+                context.fillRect(drawX - 1, drawY - 20, textWidth + 8, 20);
+
+                // วาดข้อความด้านบนกรอบ
+                context.fillStyle = '#FFFFFF'; // ตัวอักษรสีขาว
+                context.fillText(label, drawX + 3, drawY - 5);
+            });
+        }
+        
+        // 6. เมื่อหน้าเว็บถูกปิดหรือผู้ใช้ออกจากหน้า ให้หยุดกล้องและ Interval
+        window.addEventListener('beforeunload', () => {
+            stopRealTimeDetection();
+            if (video.srcObject) {
+                video.srcObject.getTracks().forEach(track => track.stop());
+            }
+        });
+
+    </script>
+</body>
+</html>
