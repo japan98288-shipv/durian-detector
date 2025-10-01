@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>intelligent Leaf Scan AI</title>
+    <title>Intelligent Leaf Scan AI</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
     
@@ -22,11 +22,9 @@
         }
         /* ถ้าต้องการให้ภาพจากกล้องหน้าไม่กลับด้าน (Mirror) */
         #videoElement {
-             transform: scaleX(-1);
         }
     </style>
 </head>
-
 <body class="bg-light">
 
     <nav class="navbar navbar-expand-lg navbar-dark bg-success fixed-top shadow-lg">
@@ -43,7 +41,7 @@
     <div class="container mt-4">
 
         <div id="camera_section">
-            <h1 class="text-center mb-4 text-success fw-bold">หน้าตรวจจับโรคทุเรียน</h1>
+            <h1 class="text-center mb-4 text-success fw-bold">ตรวจจับใบโรค</h1>
             
             <div class="card shadow-lg mx-auto" style="max-width: 640px;">
                 <div class="card-body p-0"> 
@@ -58,6 +56,7 @@
                         <i class="bi bi-camera-video"></i> เริ่มตรวจจับ
                     </button>
                     <p id="status" class="mt-3 fs-6 fw-bold text-info">รอการเริ่ม...</p>
+                    <p id="connectionStatus" class="mt-2 fs-6 fw-bold text-danger">สถานะ API: กำลังตรวจสอบ...</p> 
                     <p id="detectionCount" class="text-muted small">ตรวจพบ: 0</p>
                 </div>
             </div>
@@ -68,7 +67,9 @@
             <p class="text-muted">ส่วนนี้จะแสดงผลการตรวจจับที่ผ่านมา (ต้องพัฒนาเพิ่มเติม)</p>
         </div>
 
-    </div> <div class="offcanvas offcanvas-start bg-light" tabindex="-1" id="offcanvasMenu" aria-labelledby="offcanvasMenuLabel">
+    </div> 
+    
+    <div class="offcanvas offcanvas-start bg-light" tabindex="-1" id="offcanvasMenu" aria-labelledby="offcanvasMenuLabel">
         <div class="offcanvas-header bg-success text-white">
             <h5 class="offcanvas-title" id="offcanvasMenuLabel">ตัวเลือกเมนู</h5>
             <button type="button" class="btn-close text-reset" data-bs-dismiss="offcanvas" aria-label="Close"></button>
@@ -107,147 +108,269 @@
 
     <script>
     
-        const API_URL = "https://unintroductory-stanford-preconversational.ngrok-free.dev/detect_disease"; // เปลี่ยนตรงนี้
+    const BASE_API_URL = "https://tawanna-ionogenic-gyrally.ngrok-free.dev"; 
+    const API_URL = `${BASE_API_URL}/detect_disease`; 
+    
+    // ** กำหนดขนาด Input ของ AI ใน Frontend ให้ตรงกับ Backend **
+    const AI_INPUT_SIZE = 416; 
+
+    const video = document.getElementById('videoElement');
+    const canvas = document.getElementById('canvasOverlay');
+    const startButton = document.getElementById('startButton');
+    const statusElement = document.getElementById('status');
+    const detectionCountElement = document.getElementById('detectionCount');
+    const connectionStatusElement = document.getElementById('connectionStatus');
+    const ctx = canvas.getContext('2d');
+    
+    let stream = null;
+    let isProcessing = false;
+    let isBackendConnected = false;
+    
+    let latestDetectionData = { boxes: [], detections: 0 }; 
+
+    let frameSendInterval = 550; 
+    let lastSendTime = 0; 
+
+    // ----------------------------------------------------------------------
+    // ** ฟังก์ชันหลัก: Loop การ Render 60 FPS (แก้ปัญหาภาพกระพริบ) **
+    // ----------------------------------------------------------------------
+    function drawLoop() {
+        if (!isProcessing) return; 
+
+        // 1. วาดวิดีโอสด (Video Feed) ลง Canvas ตลอดเวลา (60 FPS)
+        // นี่คือส่วนที่ทำให้ภาพวิดีโอต้นฉบับดูสมูท
+        // 💡 แก้ไข: ไม่ต้องวาด video ลง canvas ตลอดเวลาเพราะ canvas overlay ทับ video element
+        // ctx.clearRect(0, 0, canvas.width, canvas.height); 
+        // ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         
-        const video = document.getElementById('videoElement');
-        const canvas = document.getElementById('canvasOverlay');
-        const startButton = document.getElementById('startButton');
-        const statusElement = document.getElementById('status');
-        const detectionCountElement = document.getElementById('detectionCount');
-        const ctx = canvas.getContext('2d');
+        // 1.1 ล้าง Canvas Overlay ก่อนวาดกล่องใหม่
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
         
-        let stream = null;
-        let isProcessing = false;
+        // 2. วาด Bounding Box ทับลงไปทันที (วาดตามข้อมูล JSON ล่าสุด)
+        drawBoundingBoxes(latestDetectionData.boxes); // <--- วาดกล่องที่ 60 FPS
 
-        // ฟังก์ชันเริ่มต้นกล้อง
-        async function startCamera() {
-            try {
-                statusElement.textContent = "กำลังเชื่อมต่อกล้อง...";
-                stream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { facingMode: 'environment' } // ใช้กล้องหลังมือถือ
-                });
-                video.srcObject = stream;
-                
-                video.onloadedmetadata = () => {
-                    video.play();
-                    // กำหนดขนาด Canvas ให้เท่ากับ Video
-                    canvas.width = video.videoWidth;
-                    canvas.height = video.videoHeight;
-                    video.style.height = `${video.videoHeight}px`; 
-                    video.style.width = `${video.videoWidth}px`;
-                    canvas.style.height = `${video.videoHeight}px`; 
-                    canvas.style.width = `${video.videoWidth}px`;
-                    
-                    statusElement.textContent = "กล้องพร้อมใช้งาน กด 'เริ่มตรวจจับ'";
-                    startButton.textContent = "หยุดตรวจจับ";
-                    startButton.classList.remove('btn-primary');
-                    startButton.classList.add('btn-danger');
-
-                    // เริ่มวนลูปส่งภาพเมื่อผู้ใช้กดปุ่ม
-                    startButton.onclick = stopDetection;
-                };
-
-            } catch (err) {
-                console.error("Error accessing camera: ", err);
-                statusElement.textContent = `ข้อผิดพลาด: ไม่สามารถเข้าถึงกล้อง (${err.message})`;
-                startButton.textContent = "เริ่มตรวจจับ (ผิดพลาด)";
-            }
+        // 3. จัดการการส่งภาพไปยัง Backend (ส่งภาพใหม่ตาม frameSendInterval)
+        const now = performance.now();
+        if (now - lastSendTime >= frameSendInterval) {
+            sendFrame(now); 
+            lastSendTime = now;
         }
 
-        // ฟังก์ชันหยุดการตรวจจับ
-        function stopDetection() {
-            if (stream) {
-                stream.getTracks().forEach(track => track.stop());
-                video.srcObject = null;
-            }
-            isProcessing = false;
-            statusElement.textContent = "หยุดการตรวจจับแล้ว";
-            startButton.textContent = "เริ่มตรวจจับ";
-            startButton.classList.remove('btn-danger');
-            startButton.classList.add('btn-primary');
-            startButton.onclick = startCamera;
+        requestAnimationFrame(drawLoop);
+    }
+
+    // ----------------------------------------------------------------------
+    // ** ฟังก์ชันใหม่: วาด Bounding Box จากพิกัด JSON (จุดที่แก้ไข Scaling) **
+    // ----------------------------------------------------------------------
+    function drawBoundingBoxes(boxes) {
+        if (!boxes || boxes.length === 0) return;
+
+        // 💡 การแก้ไข CRITICAL: คำนวณอัตราส่วน Scale โดยใช้ขนาด Video/Canvas เทียบกับ AI_INPUT_SIZE (416)
+        const scaleX = canvas.width / AI_INPUT_SIZE;
+        const scaleY = canvas.height / AI_INPUT_SIZE;
+        
+        // การตั้งค่าการวาด
+        ctx.lineWidth = 3;
+        ctx.font = 'bold 14px Arial';
+        ctx.textAlign = 'start';
+
+        boxes.forEach(detection => {
+            // [x1, y1, x2, y2] ที่ส่งมาจาก Backend (สเกล 416)
+            const [x1_ai, y1_ai, x2_ai, y2_ai] = detection.box; 
+            const label = `${detection.class} (${(detection.confidence * 100).toFixed(1)}%)`;
             
-            // ล้าง Canvas
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-        }
+            // 4. ปรับพิกัด: นำพิกัด 416 มาคูณด้วยอัตราส่วน Scale
+            const x1 = x1_ai * scaleX;
+            const y1 = y1_ai * scaleY;
+            const width = (x2_ai - x1_ai) * scaleX;
+            const height = (y2_ai - y1_ai) * scaleY;
+            
+            // วาดกล่อง (Stroke Rect)
+            ctx.strokeStyle = '#dc3545'; // สีแดงเข้ม (Bootstrap danger)
+            ctx.strokeRect(x1, y1, width, height); 
+            
+            // วาดพื้นหลังข้อความ
+            ctx.fillStyle = '#dc3545'; 
+            ctx.fillRect(
+                x1, 
+                y1 - 20, 
+                ctx.measureText(label).width + 10, // เผื่อพื้นที่
+                20
+            );
+            
+            // วาดข้อความ
+            ctx.fillStyle = 'white';
+            ctx.fillText(label, x1 + 5, y1 - 5);
+        });
+    }
+    
+    // ----------------------------------------------------------------------
+    // ** ฟังก์ชันอื่น ๆ (ไม่เปลี่ยนแปลง) **
+    // ----------------------------------------------------------------------
+    
+    async function checkBackendConnectivity() {
+        try {
+            connectionStatusElement.textContent = "สถานะ API: กำลังตรวจสอบ...";
+            connectionStatusElement.classList.remove('text-success', 'text-danger');
+            connectionStatusElement.classList.add('text-warning');
 
-        // ฟังก์ชันส่งภาพไปยัง Backend
-        async function sendFrame() {
-            if (!isProcessing || video.paused || video.ended) {
-                isProcessing = false;
-                return;
+            const response = await fetch(BASE_API_URL, { method: 'GET' });
+
+            if (response.ok || response.status === 404 || response.status === 405) {
+                isBackendConnected = true;
+                connectionStatusElement.textContent = "สถานะ API: เชื่อมต่อสำเร็จ (ออนไลน์)";
+                connectionStatusElement.classList.remove('text-warning', 'text-danger');
+                connectionStatusElement.classList.add('text-success');
+                return true;
+            } else {
+                throw new Error(`Server responded with status: ${response.status}`);
             }
 
-            try {
-                // 1. วาดเฟรมปัจจุบันลงบน Canvas เพื่อดึงข้อมูล
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        } catch (error) {
+            isBackendConnected = false;
+            connectionStatusElement.textContent = `สถานะ API: ล้มเหลว! (${error.message})`;
+            connectionStatusElement.classList.remove('text-warning', 'text-success');
+            connectionStatusElement.classList.add('text-danger');
+            statusElement.textContent = "ไม่สามารถเชื่อมต่อ Backend ได้ กรุณาตรวจสอบ Cloudflare Tunnel/FastAPI";
+            console.error("Backend Connection Check Failed:", error);
+            return false;
+        }
+    }
+    
+    async function startCamera() {
+        if (!isBackendConnected) {
+            statusElement.textContent = "หยุด! Backend ยังไม่พร้อมใช้งาน กรุณาตรวจสอบสถานะ API";
+            return;
+        }
+
+        try {
+            statusElement.textContent = "กำลังเชื่อมต่อกล้อง...";
+            stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: 'environment' } 
+            });
+            video.srcObject = stream;
+            
+            video.onloadedmetadata = () => {
+                video.play();
+                // กำหนดขนาด Canvas ให้เท่ากับ Video
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                // ปรับขนาดของ Video และ Canvas ให้ตรงกับขนาดที่แสดงผลบนหน้าจอ
+                video.style.height = `${video.videoHeight}px`; 
+                video.style.width = `${video.videoWidth}px`;
+                canvas.style.height = `${video.videoHeight}px`; 
+                canvas.style.width = `${video.videoWidth}px`;
                 
-                // 2. แปลง Canvas เป็น Blob (ภาพ JPEG)
-                canvas.toBlob(async (blob) => {
-                    if (!blob) return;
+                statusElement.textContent = "กล้องพร้อมใช้งาน กำลังเริ่มตรวจจับ...";
+                startButton.textContent = "หยุดตรวจจับ";
+                startButton.classList.remove('btn-primary');
+                startButton.classList.add('btn-danger');
 
-                    const formData = new FormData();
-                    formData.append('file', blob, 'frame.jpg');
+                isProcessing = true;
+                drawLoop(); // ** เริ่มลูปวาดภาพ 60 FPS **
+                
+                startButton.onclick = stopDetection;
+            };
 
-                    statusElement.textContent = "กำลังส่งภาพและประมวลผล...";
-                    
-                    // 3. ส่ง POST Request ไปยัง FastAPI
-                    const response = await fetch(API_URL, {
-                        method: 'POST',
-                        body: formData,
-                        // ไม่ต้องกำหนด Content-Type เพราะ FormData จะจัดการเอง
-                    });
-
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
-                    }
-
-                    const result = await response.json();
-                    
-                    // 4. แสดงภาพที่ถูกตรวจจับแล้ว
-                    const img = new Image();
-                    img.onload = function() {
-                        ctx.clearRect(0, 0, canvas.width, canvas.height);
-                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                        
-                        // แสดงผลลัพธ์
-                        detectionCountElement.textContent = `ตรวจพบ: ${result.detections} วัตถุ`;
-                        statusElement.textContent = "ตรวจจับสำเร็จ! กำลังเตรียมเฟรมถัดไป...";
-                        
-                        // เรียกส่งภาพถัดไปทันที
-                        setTimeout(sendFrame, 100); // ดีเลย์ 100ms เพื่อลดภาระ CPU
-                    };
-                    img.src = 'data:image/jpeg;base64,' + result.image_base64;
-
-                }, 'image/jpeg', 0.8); // กำหนดคุณภาพ JPEG
-
-            } catch (error) {
-                statusElement.textContent = `ข้อผิดพลาด Server: ${error.message}. กรุณาตรวจสอบ ngrok/FastAPI`;
-                console.error("Detection API Error:", error);
-                // หยุดการประมวลผล
-                isProcessing = false; 
-                stopDetection();
-            }
+        } catch (err) {
+            console.error("Error accessing camera: ", err);
+            statusElement.textContent = `ข้อผิดพลาด: ไม่สามารถเข้าถึงกล้อง (${err.message})`;
+            startButton.textContent = "เริ่มตรวจจับ (ผิดพลาด)";
         }
+    }
+
+    function stopDetection() {
+        if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+            video.srcObject = null;
+        }
+        isProcessing = false;
+        statusElement.textContent = "หยุดการตรวจจับแล้ว";
+        startButton.textContent = "เริ่มตรวจจับ";
+        startButton.classList.remove('btn-danger');
+        startButton.classList.add('btn-primary');
+        startButton.onclick = startDetectionProcess; 
         
-        // เมื่อกดปุ่ม 'เริ่มตรวจจับ'
-        startButton.onclick = () => {
-             if (stream && isProcessing) {
-                 stopDetection();
-             } else {
-                 isProcessing = true;
-                 startCamera().then(() => {
-                     // เริ่มส่งเฟรมหลังจากกล้องเริ่มทำงาน
-                     if(isProcessing) sendFrame();
-                 });
-             }
-        };
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        latestDetectionData = { boxes: [], detections: 0 }; 
+    }
 
-        // เมื่อหน้าต่างโหลดเสร็จ
-        window.onload = function() {
-            statusElement.textContent = "กรุณาเปิดกล้องและเริ่มตรวจจับ";
-        };
+    async function sendFrame(sendTime) {
+        if (!isProcessing || video.paused || video.ended) {
+            return;
+        }
 
-    </script>
+        try {
+            // 1. วาดเฟรมปัจจุบันลงบน Canvas เพื่อดึงข้อมูลสำหรับส่ง
+            // 💡 แก้ไข: ใช้ canvas เพื่อ capture frame สำหรับส่งเท่านั้น ไม่ต้องวาดซ้ำใน drawLoop
+            const captureCanvas = document.createElement('canvas');
+            const captureCtx = captureCanvas.getContext('2d');
+            captureCanvas.width = video.videoWidth;
+            captureCanvas.height = video.videoHeight;
+            captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
+            
+            // 2. แปลง Canvas เป็น Blob (ภาพ JPEG)
+            captureCanvas.toBlob(async (blob) => {
+                if (!blob) return;
+
+                const formData = new FormData();
+                formData.append('file', blob, 'frame.jpg');
+
+                statusElement.textContent = "กำลังส่งภาพและประมวลผล...";
+                
+                // 3. ส่ง POST Request ไปยัง FastAPI
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const result = await response.json();
+                
+                // 4. เก็บผลลัพธ์ JSON ล่าสุด (พิกัดกล่อง)
+                latestDetectionData = {
+                    boxes: result.boxes,
+                    detections: result.detections
+                };
+                
+                // อัปเดตสถานะการตรวจจับ
+                detectionCountElement.textContent = `ตรวจพบ: ${result.detections} วัตถุ`;
+                const processingTime = performance.now() - sendTime;
+                statusElement.textContent = `ตรวจจับสำเร็จ! (Lat: ${processingTime.toFixed(0)}ms) - ${Math.round(1000/frameSendInterval)} FPS`;
+
+            }, 'image/jpeg', 0.7); 
+
+        } catch (error) {
+            statusElement.textContent = `ข้อผิดพลาด Server: ${error.message}. การเชื่อมต่อหลุด`;
+            console.error("Detection API Error:", error);
+            connectionStatusElement.textContent = `สถานะ API: ล้มเหลวในการสื่อสาร`;
+            connectionStatusElement.classList.remove('text-success', 'text-warning');
+            connectionStatusElement.classList.add('text-danger');
+            
+            isProcessing = false; 
+            stopDetection();
+        }
+    }
+    
+    async function startDetectionProcess() {
+        const isReady = await checkBackendConnectivity(); 
+        if (isReady) {
+            isProcessing = true;
+            startCamera(); 
+        } else {
+            isProcessing = false;
+        }
+    };
+
+    startButton.onclick = startDetectionProcess;
+
+    window.onload = async function() {
+        statusElement.textContent = "กรุณาเปิดกล้องและเริ่มตรวจจับ";
+        await checkBackendConnectivity(); 
+    };
+</script>
 </body>
 </html>
