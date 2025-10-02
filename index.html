@@ -83,13 +83,13 @@
     const BASE_API_URL = "https://tawanna-ionogenic-gyrally.ngrok-free.dev"; 
     const API_URL = `${BASE_API_URL}/detect_disease`; 
     
-    const AI_INPUT_SIZE = 480; 
+    const AI_INPUT_SIZE = 680; 
     
     // 🎯 Mapping ชื่อคลาสภาษาอังกฤษเป็นชื่อโรคภาษาไทย (ตามที่คุณแจ้งมา)
     const CLASS_NAME_MAPPING = {
-        'agal-spot': 'ใบจุด (Agal Spot)',       
-        'blight leaf': 'ใบไหม้ (Blight Leaf)',   
-        'healthy': 'ใบปกติ/ไม่พบโรค',           
+        'agal-spot': 'ใบจุด (Agal Spot)', 
+        'blight leaf': 'ใบไหม้ (Blight Leaf)', 
+        'healthy': 'ใบปกติ/ไม่พบโรค', 
     };
 
     // Element References
@@ -97,7 +97,7 @@
     const canvas = document.getElementById('canvasOverlay');
     const videoWrapper = document.getElementById('video-wrapper');
     const startButton = document.getElementById('startButton');
-    const cameraSwitchButton = document.getElementById('cameraSwitchButton'); // 🛠️ NEW
+    const cameraSwitchButton = document.getElementById('cameraSwitchButton'); 
     const statusElement = document.getElementById('status');
     const detectionCountElement = document.getElementById('detectionCount');
     const connectionStatusElement = document.getElementById('connectionStatus');
@@ -108,7 +108,7 @@
     let stream = null;
     let isProcessing = false;
     let isBackendConnected = false;
-    let currentFacingMode = 'environment'; // 🛠️ NEW: สถานะเริ่มต้น: กล้องหลัง
+    let currentFacingMode = 'environment'; 
     
     let latestDetectionData = { 
         boxes: [], 
@@ -137,7 +137,7 @@
     }
 
     // ----------------------------------------------------------------------
-    // ** 2. ฟังก์ชันวาดกล่อง Bounding Boxes **
+    // ** 2. ฟังก์ชันวาดกล่อง Bounding Boxes (แก้ไข Logic การฟลิป) **
     // ----------------------------------------------------------------------
     function drawBoundingBoxes(boxes) {
         if (!boxes || boxes.length === 0) return;
@@ -145,7 +145,7 @@
         const scaleX = canvas.width / AI_INPUT_SIZE;
         const scaleY = canvas.height / AI_INPUT_SIZE;
         
-        // ตรวจสอบการฟลิปจาก CSS 
+        // ตรวจสอบการฟลิปจาก JS State
         const isMirroredCSS = currentFacingMode === 'user'; 
 
         ctx.lineWidth = 3; 
@@ -159,18 +159,31 @@
             const conf = detection.confidence;
             const englishName = detection.class;
             
-            let x1 = x1_ai * scaleX;
+            // 1. Scale พิกัดจาก AI (480x480) ให้ตรงกับ Canvas
+            let x1_scaled = x1_ai * scaleX;
             const y1 = y1_ai * scaleY;
-            const width = (x2_ai - x1_ai) * scaleX;
-            const height = (y2_ai - y1_ai) * scaleY;
+            let x2_scaled = x2_ai * scaleX;
+            const y2 = y2_ai * scaleY;
 
-            // ปรับตำแหน่ง X หากมีการฟลิปเพื่อวาดกรอบให้ตรง
+            // 2. 💡 แก้ไข: ปรับตำแหน่ง X หากมีการฟลิปเพื่อวาดกรอบให้ตรง
             if (isMirroredCSS) {
-                x1 = canvas.width - (x1 + width);
+                // คำนวณตำแหน่ง X ใหม่
+                x1_scaled = canvas.width - x1_scaled;
+                x2_scaled = canvas.width - x2_scaled;
+                
+                // สลับค่าเพื่อให้ x1 น้อยกว่า x2
+                [x1_scaled, x2_scaled] = [Math.min(x1_scaled, x2_scaled), Math.max(x1_scaled, x2_scaled)];
             }
             
+            // 3. คำนวณพิกัดสุดท้ายและขนาด
+            const x1 = x1_scaled;
+            const width = x2_scaled - x1_scaled;
+            const height = y2 - y1;
+            
+            // วาดกรอบ
             ctx.strokeRect(x1, y1, width, height); 
             
+            // วาดป้ายกำกับ
             const thaiName = CLASS_NAME_MAPPING[englishName.toLowerCase()] || englishName;
             const label = `${thaiName} (${(conf * 100).toFixed(0)}%)`; 
             
@@ -194,6 +207,7 @@
         } else {
             historyHtml += '<ul class="list-group">';
             
+            // 💡 ยังคงใช้ Set เพื่อแสดงรายการโรคที่ไม่ซ้ำกันในส่วน History
             const uniqueDetections = new Set();
             
             boxes.forEach(detection => {
@@ -228,7 +242,6 @@
     // ----------------------------------------------------------------------
     
     async function checkBackendConnectivity() {
-        // ... (โค้ด checkBackendConnectivity เดิม) ...
         try {
             connectionStatusElement.textContent = "สถานะ API: กำลังตรวจสอบ...";
             connectionStatusElement.classList.remove('text-success', 'text-danger');
@@ -355,7 +368,7 @@
         } else {
             statusElement.textContent = `ข้อผิดพลาดร้ายแรง: ไม่สามารถเข้าถึงกล้อง (${facingMode}) ได้`;
             startButton.textContent = "เริ่มตรวจจับ (ผิดพลาด)";
-            cameraSwitchButton.style.display = 'none'; // ซ่อนปุ่มถ้ากล้องล้มเหลว
+            cameraSwitchButton.style.display = 'none'; 
             return false;
         }
     }
@@ -371,12 +384,12 @@
         startButton.classList.remove('btn-danger');
         startButton.classList.add('btn-primary');
         startButton.onclick = startDetectionProcess; 
-        cameraSwitchButton.style.display = 'none'; // ซ่อนปุ่มสลับกล้องเมื่อหยุด
+        cameraSwitchButton.style.display = 'none'; 
         
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         latestDetectionData = { boxes: [], detections: 0 }; 
-        updateHistory([]); // ล้างประวัติเมื่อหยุด
-        setCameraFlip('default'); // รีเซ็ตการฟลิป
+        updateHistory([]); 
+        setCameraFlip('default'); 
     }
 
     // 🛠️ NEW: ฟังก์ชันสลับกล้อง
@@ -406,7 +419,7 @@
 
             // 🛠️ NEW: จัดการการฟลิปภาพสำหรับ AI ก่อนส่ง
             if (currentFacingMode === 'user') {
-                // หากใช้กล้องหน้า เราต้องกลับภาพให้ AI เพื่อให้กล่องตรง
+                // หากใช้กล้องหน้า เราต้องกลับภาพให้ AI เพื่อให้กล่องตรง (AI ไม่ต้องการภาพฟลิป)
                 captureCtx.translate(CAPTURE_SIZE, 0);
                 captureCtx.scale(-1, 1);
             }
@@ -430,7 +443,6 @@
                     body: formData,
                 });
 
-                // ... (ส่วนการจัดการ Response)
                 if (!response.ok) {
                     const errorText = await response.text();
                     statusElement.textContent = `ข้อผิดพลาด API: เซิร์ฟเวอร์ตอบกลับสถานะ ${response.status} (Backend/ngrok อาจปิดอยู่)`;
@@ -506,7 +518,7 @@
     };
 
     startButton.onclick = startDetectionProcess;
-    cameraSwitchButton.onclick = switchCamera; // 🛠️ NEW: ผูกปุ่มสลับกล้อง
+    cameraSwitchButton.onclick = switchCamera; 
 
     window.onload = async function() {
         statusElement.textContent = "กรุณาเปิดกล้องและเริ่มตรวจจับ";
