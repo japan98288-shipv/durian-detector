@@ -43,7 +43,7 @@
 
     <div class="container mt-4">
         <div id="camera_section">
-            <h1 class="text-center mb-4 text-success fw-bold">ตรวจจับโรคใบพืชแบบ Real-Time</h1>
+            <h1 class="text-center mb-4 text-success fw-bold">ตรวจจับโรคใบพืช</h1>
             
             <div class="card shadow-lg mx-auto" style="max-width: 640px;">
                 <div class="card-body p-0"> 
@@ -65,8 +65,8 @@
         </div>
         
         <div id="results_history" class="container mt-5 p-4 border rounded bg-white shadow-sm">
-            <h2 class="text-primary"><i class="bi bi-list-columns"></i> ประวัติผลลัพธ์</h2>
-            <p class="text-muted">ส่วนนี้สำหรับแสดงผลการตรวจจับที่ผ่านมา (ต้องพัฒนาเพิ่มเติม)</p>
+            <h2 class="text-primary"><i class="bi bi-list-columns"></i> ประวัติ</h2>
+            <p class="text-muted">ประวิติการแสดงผลการตรวจจับที่ผ่านมา</p>
         </div>
     </div> 
     
@@ -98,8 +98,15 @@
     const BASE_API_URL = "https://tawanna-ionogenic-gyrally.ngrok-free.dev"; 
     const API_URL = `${BASE_API_URL}/detect_disease`; 
     
-    const AI_INPUT_SIZE = 480; // 🎯 แก้ไข: ลดขนาดภาพที่ส่งเป็น 480x480
+    const AI_INPUT_SIZE = 480; 
     
+    // 🎯 Mapping ชื่อคลาสภาษาอังกฤษเป็นชื่อโรคภาษาไทย (ตามที่คุณแจ้งมา)
+    const CLASS_NAME_MAPPING = {
+        'agal-spot': 'ใบจุด (Agal Spot)',       
+        'blight leaf': 'ใบไหม้ (Blight Leaf)',   
+        'healthy': 'ใบปกติ/ไม่พบโรค',           
+    };
+
     // Element References
     const video = document.getElementById('videoElement');
     const canvas = document.getElementById('canvasOverlay');
@@ -108,6 +115,7 @@
     const statusElement = document.getElementById('status');
     const detectionCountElement = document.getElementById('detectionCount');
     const connectionStatusElement = document.getElementById('connectionStatus');
+    const historySection = document.getElementById('results_history');
     const ctx = canvas.getContext('2d');
     
     // Global State Variables
@@ -120,7 +128,7 @@
         detections: 0 
     }; 
 
-    let frameSendInterval = 350; // ⚡ แก้ไข: ลดช่วงเวลาการส่งภาพ (เพื่อให้ไวกว่า 550ms)
+    let frameSendInterval = 350; 
     let lastSendTime = 0; 
 
     // ----------------------------------------------------------------------
@@ -161,7 +169,7 @@
         boxes.forEach(detection => {
             const [x1_ai, y1_ai, x2_ai, y2_ai] = detection.box; 
             const conf = detection.confidence;
-            const name = detection.class;
+            const englishName = detection.class;
             
             let x1 = x1_ai * scaleX;
             const y1 = y1_ai * scaleY;
@@ -174,7 +182,9 @@
             
             ctx.strokeRect(x1, y1, width, height); 
             
-            const label = `${name} (${(conf * 100).toFixed(0)}%)`; 
+            // ใช้ชื่อไทยในการแสดงผลบนกรอบ
+            const thaiName = CLASS_NAME_MAPPING[englishName.toLowerCase()] || englishName;
+            const label = `${thaiName} (${(conf * 100).toFixed(0)}%)`; 
             
             const textWidth = ctx.measureText(label).width;
             ctx.fillRect(x1 - 1, y1 - 20, textWidth + 8, 20);
@@ -186,7 +196,47 @@
     }
 
     // ----------------------------------------------------------------------
-    // ** 3. ฟังก์ชันการเชื่อมต่อและควบคุม **
+    // ** 3. ฟังก์ชันอัปเดตประวัติผลลัพธ์ **
+    // ----------------------------------------------------------------------
+    function updateHistory(boxes) {
+        let historyHtml = '<h2 class="text-primary"><i class="bi bi-list-columns"></i> ประวัติผลลัพธ์ล่าสุด</h2>';
+        
+        if (boxes.length === 0) {
+            historyHtml += '<p class="text-muted">ไม่พบการตรวจจับในขณะนี้</p>';
+        } else {
+            historyHtml += '<ul class="list-group">';
+            
+            const uniqueDetections = new Set();
+            
+            boxes.forEach(detection => {
+                const englishName = detection.class;
+                const confidence = detection.confidence;
+                
+                const thaiName = CLASS_NAME_MAPPING[englishName.toLowerCase()] || englishName;
+                
+                if (!uniqueDetections.has(thaiName)) {
+                    const confidenceColor = confidence > 0.75 ? 'text-success' : confidence > 0.5 ? 'text-warning' : 'text-muted';
+                    
+                    historyHtml += `
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            <span class="fw-bold">พบ: ${thaiName}</span>
+                            <span class="${confidenceColor} small">
+                                มั่นใจ ${(confidence * 100).toFixed(1)}%
+                            </span>
+                        </li>
+                    `;
+                    uniqueDetections.add(thaiName);
+                }
+            });
+            
+            historyHtml += '</ul>';
+        }
+        
+        historySection.innerHTML = historyHtml;
+    }
+
+    // ----------------------------------------------------------------------
+    // ** 4. ฟังก์ชันการเชื่อมต่อและควบคุม **
     // ----------------------------------------------------------------------
     
     async function checkBackendConnectivity() {
@@ -228,6 +278,7 @@
         }
     }
     
+    // 💥 ฟังก์ชันที่แก้ไขการปรับขนาด Canvas
     function setupVideoAndStartLoop(currentStream) {
         return new Promise((resolve) => {
             stream = currentStream;
@@ -238,16 +289,19 @@
             video.onloadedmetadata = () => {
                 video.play();
                 
+                // 1. กำหนดขนาด 'เชิงกายภาพ' (Physical Size) ของ Canvas
                 canvas.width = video.videoWidth;
                 canvas.height = video.videoHeight;
                 
-                setTimeout(() => {
-                    const videoRect = video.getBoundingClientRect();
-                    canvas.style.width = `${videoRect.width}px`;
-                    canvas.style.height = `${videoRect.height}px`;
-                    videoWrapper.style.height = `${videoRect.height}px`; 
-                    console.log(`Camera Stream Ready: ${canvas.width}x${canvas.height} | CSS: ${videoRect.width}px x ${videoRect.height}px`);
-                }, 100); 
+                // 2. กำหนดขนาด 'เชิงแสดงผล' (CSS Size) ของ Canvas ทันที
+                const videoRect = video.getBoundingClientRect();
+                canvas.style.width = `${videoRect.width}px`;
+                canvas.style.height = `${videoRect.height}px`;
+                
+                // 3. กำหนดความสูงของ Container
+                videoWrapper.style.height = `${videoRect.height}px`; 
+                
+                console.log(`Camera Stream Ready: ${canvas.width}x${canvas.height} | CSS: ${videoRect.width}px x ${videoRect.height}px`);
 
                 statusElement.textContent = "กล้องพร้อมใช้งาน กำลังเริ่มตรวจจับ...";
                 startButton.textContent = "หยุดตรวจจับ";
@@ -314,6 +368,7 @@
         
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         latestDetectionData = { boxes: [], detections: 0 }; 
+        updateHistory([]); // ล้างประวัติเมื่อหยุด
     }
 
     async function sendFrame(sendTime) {
@@ -393,11 +448,13 @@
                     detections: detectionCount
                 };
                 
+                updateHistory(boxesData);
+                
                 detectionCountElement.textContent = `ตรวจพบ: ${detectionCount} วัตถุ`;
                 const processingTime = performance.now() - sendTime;
                 statusElement.textContent = `ตรวจจับสำเร็จ! (Lat: ${processingTime.toFixed(0)}ms) - ${Math.round(1000/frameSendInterval)} FPS`;
 
-            }, 'image/jpeg', 0.4); // 🖼️ แก้ไข: ลดคุณภาพการบีบอัดเป็น 0.4
+            }, 'image/jpeg', 0.4); 
 
         } catch (error) {
             statusElement.textContent = `หยุดการเชื่อมต่อ: ไม่สามารถติดต่อเซิร์ฟเวอร์ได้`;
