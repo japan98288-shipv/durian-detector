@@ -19,6 +19,8 @@
             width: 100%; 
             height: auto;
             display: block;
+            /* ตั้งค่าเริ่มต้นสำหรับการฟลิปกล้องหน้า (จะถูกกำหนดด้วย JS เมื่อเริ่มกล้อง) */
+            transform: scaleX(-1);
         }
         #canvasOverlay {
             position: absolute;
@@ -26,17 +28,20 @@
             left: 0;
             z-index: 10;
             pointer-events: none; 
+            /* ตั้งค่าเริ่มต้นสำหรับการฟลิป Canvas (จะถูกกำหนดด้วย JS เมื่อเริ่มกล้อง) */
+            transform: scaleX(-1);
         }
     </style>
 </head>
 <body class="bg-light">
     <nav class="navbar navbar-expand-lg navbar-dark bg-success fixed-top shadow-lg">
         <div class="container-fluid">
-            <a class="navbar-brand fw-bold" href="#">Intelligent LeafScanner (Speed Optimized)</a>
-            <button class="btn btn-sm btn-outline-light" type="button" data-bs-toggle="offcanvas" data-bs-target="#offcanvasMenu" aria-controls="offcanvasMenu">
-                <i class="bi bi-list fs-4"></i>
+            <a class="navbar-brand fw-bold" href="#">Intelligent LeafScanner</a>
+            
+            <button id="cameraSwitchButton" class="btn btn-sm btn-outline-light" type="button" style="display: none;">
+                <i class="bi bi-camera-switch fs-4"></i>
             </button>
-        </div>
+            </div>
     </nav>
     
     <div style="height: 60px;"></div> 
@@ -65,31 +70,11 @@
         </div>
         
         <div id="results_history" class="container mt-5 p-4 border rounded bg-white shadow-sm">
-            <h2 class="text-primary"><i class="bi bi-list-columns"></i> ประวัติ</h2>
-            <p class="text-muted">ประวิติการแสดงผลการตรวจจับที่ผ่านมา</p>
+            <h2 class="text-primary"><i class="bi bi-list-columns"></i> ประวัติผลลัพธ์ล่าสุด</h2>
+            <p class="text-muted">ไม่พบการตรวจจับในขณะนี้</p>
         </div>
     </div> 
     
-    <div class="offcanvas offcanvas-start bg-light" tabindex="-1" id="offcanvasMenu" aria-labelledby="offcanvasMenuLabel">
-        <div class="offcanvas-header bg-success text-white">
-            <h5 class="offcanvas-title" id="offcanvasMenuLabel">ตัวเลือกเมนู</h5>
-            <button type="button" class="btn-close text-reset" data-bs-dismiss="offcanvas" aria-label="Close"></button>
-        </div>
-        <div class="offcanvas-body">
-            <ul class="navbar-nav justify-content-end flex-grow-1 pe-3">
-                <li class="nav-item mb-2">
-                    <a class="nav-link active fs-5 text-success" href="#camera_section" data-bs-dismiss="offcanvas">
-                        <i class="bi bi-camera-video"></i> หน้าตรวจจับ (กล้อง)
-                    </a>
-                </li>
-                <li class="nav-item"><a class="nav-link fs-5" href="#" target="_blank" data-bs-dismiss="offcanvas"><i class="bi bi-tree-fill"></i> ใบทุเรียน</a></li>
-                <li class="nav-item"><a class="nav-link fs-5" href="#" target="_blank" data-bs-dismiss="offcanvas"><i class="bi bi-tree-fill"></i> ใบมังคุด</a></li>
-                <li class="nav-item"><a class="nav-link fs-5" href="#" target="_blank" data-bs-dismiss="offcanvas"><i class="bi bi-tree-fill"></i> ใบเงาะ</a></li>
-                <li class="nav-item"><a class="nav-link fs-5" href="#" target="_blank" data-bs-dismiss="offcanvas"><i class="bi bi-tree-fill"></i> ใบลองกอง</a></li>
-            </ul>
-        </div>
-    </div>
-
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
 
     <script>
@@ -112,6 +97,7 @@
     const canvas = document.getElementById('canvasOverlay');
     const videoWrapper = document.getElementById('video-wrapper');
     const startButton = document.getElementById('startButton');
+    const cameraSwitchButton = document.getElementById('cameraSwitchButton'); // 🛠️ NEW
     const statusElement = document.getElementById('status');
     const detectionCountElement = document.getElementById('detectionCount');
     const connectionStatusElement = document.getElementById('connectionStatus');
@@ -122,13 +108,15 @@
     let stream = null;
     let isProcessing = false;
     let isBackendConnected = false;
+    let currentFacingMode = 'environment'; // 🛠️ NEW: สถานะเริ่มต้น: กล้องหลัง
     
     let latestDetectionData = { 
         boxes: [], 
         detections: 0 
     }; 
 
-    let frameSendInterval = 350; 
+    // 💡 แก้ไข: เพิ่มช่วงเวลาเป็น 600ms เพื่อหลีกเลี่ยง Ngrok Rate Limit (100 คำขอ/นาที)
+    let frameSendInterval = 600; 
     let lastSendTime = 0; 
 
     // ----------------------------------------------------------------------
@@ -157,8 +145,8 @@
         const scaleX = canvas.width / AI_INPUT_SIZE;
         const scaleY = canvas.height / AI_INPUT_SIZE;
         
-        const videoStyle = window.getComputedStyle(video);
-        const isMirrored = videoStyle.getPropertyValue('transform').includes('scaleX(-1)');
+        // ตรวจสอบการฟลิปจาก CSS 
+        const isMirroredCSS = currentFacingMode === 'user'; 
 
         ctx.lineWidth = 3; 
         ctx.font = 'bold 16px Arial'; 
@@ -176,13 +164,13 @@
             const width = (x2_ai - x1_ai) * scaleX;
             const height = (y2_ai - y1_ai) * scaleY;
 
-            if (isMirrored) {
+            // ปรับตำแหน่ง X หากมีการฟลิปเพื่อวาดกรอบให้ตรง
+            if (isMirroredCSS) {
                 x1 = canvas.width - (x1 + width);
             }
             
             ctx.strokeRect(x1, y1, width, height); 
             
-            // ใช้ชื่อไทยในการแสดงผลบนกรอบ
             const thaiName = CLASS_NAME_MAPPING[englishName.toLowerCase()] || englishName;
             const label = `${thaiName} (${(conf * 100).toFixed(0)}%)`; 
             
@@ -236,10 +224,11 @@
     }
 
     // ----------------------------------------------------------------------
-    // ** 4. ฟังก์ชันการเชื่อมต่อและควบคุม **
+    // ** 4. ฟังก์ชันการเชื่อมต่อและควบคุมกล้อง **
     // ----------------------------------------------------------------------
     
     async function checkBackendConnectivity() {
+        // ... (โค้ด checkBackendConnectivity เดิม) ...
         try {
             connectionStatusElement.textContent = "สถานะ API: กำลังตรวจสอบ...";
             connectionStatusElement.classList.remove('text-success', 'text-danger');
@@ -267,8 +256,26 @@
             return false;
         }
     }
+
+    // 🛠️ NEW: ฟังก์ชันตั้งค่าการฟลิปวิดีโอ/Canvas
+    function setCameraFlip(facingMode) {
+        if (facingMode === 'user') {
+            // กล้องหน้า: ฟลิป video และ canvas เพื่อให้เป็นกระจก
+            video.style.transform = 'scaleX(-1)';
+            canvas.style.transform = 'scaleX(-1)';
+        } else {
+            // กล้องหลัง/ค่าเริ่มต้น: ไม่ต้องฟลิป
+            video.style.transform = 'none';
+            canvas.style.transform = 'none';
+        }
+    }
     
     async function initializeCamera(constraints) {
+        // ปิดกล้องปัจจุบันก่อนถ้ามี
+        if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+            video.srcObject = null;
+        }
         try {
             const currentStream = await navigator.mediaDevices.getUserMedia(constraints);
             return currentStream;
@@ -278,8 +285,7 @@
         }
     }
     
-    // 💥 ฟังก์ชันที่แก้ไขการปรับขนาด Canvas
-    function setupVideoAndStartLoop(currentStream) {
+    function setupVideoAndStartLoop(currentStream, facingMode) {
         return new Promise((resolve) => {
             stream = currentStream;
             video.srcObject = stream;
@@ -289,6 +295,9 @@
             video.onloadedmetadata = () => {
                 video.play();
                 
+                // 🛠️ NEW: ตั้งค่าการฟลิปวิดีโอ/Canvas
+                setCameraFlip(facingMode); 
+
                 // 1. กำหนดขนาด 'เชิงกายภาพ' (Physical Size) ของ Canvas
                 canvas.width = video.videoWidth;
                 canvas.height = video.videoHeight;
@@ -303,10 +312,11 @@
                 
                 console.log(`Camera Stream Ready: ${canvas.width}x${canvas.height} | CSS: ${videoRect.width}px x ${videoRect.height}px`);
 
-                statusElement.textContent = "กล้องพร้อมใช้งาน กำลังเริ่มตรวจจับ...";
+                statusElement.textContent = `กล้องพร้อมใช้งาน (${facingMode === 'user' ? 'หน้า' : 'หลัง'}) กำลังเริ่มตรวจจับ...`;
                 startButton.textContent = "หยุดตรวจจับ";
                 startButton.classList.remove('btn-primary');
                 startButton.classList.add('btn-danger');
+                cameraSwitchButton.style.display = 'block'; // แสดงปุ่มสลับกล้อง
 
                 isProcessing = true;
                 drawLoop(); 
@@ -317,7 +327,7 @@
         });
     }
 
-    async function startCamera() {
+    async function startCamera(facingMode = currentFacingMode) {
         if (!isBackendConnected) {
             statusElement.textContent = "หยุด! Backend ยังไม่พร้อมใช้งาน";
             return false;
@@ -327,29 +337,25 @@
             statusElement.textContent = "ข้อผิดพลาด: เบราว์เซอร์ไม่รองรับ MediaDevices API";
             return false;
         }
-
-        statusElement.textContent = "กำลังเชื่อมต่อกล้อง (พยายามวิธีที่ 1: ยืดหยุ่น)...";
-
-        const constraintList = [
-            { video: true },                               
-            { video: { facingMode: 'user' } },              
-            { video: { facingMode: 'environment' } },      
-        ];
         
-        let successfulStream = null;
-        for (const constraints of constraintList) {
-            successfulStream = await initializeCamera(constraints);
-            if (successfulStream) {
-                break; 
+        currentFacingMode = facingMode;
+        statusElement.textContent = `กำลังเชื่อมต่อกล้อง (${facingMode === 'user' ? 'หน้า' : 'หลัง'})...`;
+
+        const constraints = {
+            video: {
+                facingMode: facingMode
             }
-        }
+        };
+        
+        let successfulStream = await initializeCamera(constraints);
 
         if (successfulStream) {
-            await setupVideoAndStartLoop(successfulStream);
+            await setupVideoAndStartLoop(successfulStream, facingMode);
             return true;
         } else {
-            statusElement.textContent = `ข้อผิดพลาดร้ายแรง: ไม่สามารถเข้าถึงกล้องได้เลย (ตรวจสอบสิทธิ์เบราว์เซอร์หรืออุปกรณ์)`;
+            statusElement.textContent = `ข้อผิดพลาดร้ายแรง: ไม่สามารถเข้าถึงกล้อง (${facingMode}) ได้`;
             startButton.textContent = "เริ่มตรวจจับ (ผิดพลาด)";
+            cameraSwitchButton.style.display = 'none'; // ซ่อนปุ่มถ้ากล้องล้มเหลว
             return false;
         }
     }
@@ -365,10 +371,25 @@
         startButton.classList.remove('btn-danger');
         startButton.classList.add('btn-primary');
         startButton.onclick = startDetectionProcess; 
+        cameraSwitchButton.style.display = 'none'; // ซ่อนปุ่มสลับกล้องเมื่อหยุด
         
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         latestDetectionData = { boxes: [], detections: 0 }; 
         updateHistory([]); // ล้างประวัติเมื่อหยุด
+        setCameraFlip('default'); // รีเซ็ตการฟลิป
+    }
+
+    // 🛠️ NEW: ฟังก์ชันสลับกล้อง
+    async function switchCamera() {
+        if (isProcessing) {
+            stopDetection();
+            // สลับโหมด: 'environment' -> 'user' หรือ 'user' -> 'environment'
+            currentFacingMode = (currentFacingMode === 'environment') ? 'user' : 'environment';
+            await startDetectionProcess();
+        } else {
+            // หากยังไม่เริ่ม แต่กดสลับ ก็สลับโหมดไว้รอ
+            currentFacingMode = (currentFacingMode === 'environment') ? 'user' : 'environment';
+        }
     }
 
     async function sendFrame(sendTime) {
@@ -383,7 +404,18 @@
             captureCanvas.width = CAPTURE_SIZE;
             captureCanvas.height = CAPTURE_SIZE;
 
+            // 🛠️ NEW: จัดการการฟลิปภาพสำหรับ AI ก่อนส่ง
+            if (currentFacingMode === 'user') {
+                // หากใช้กล้องหน้า เราต้องกลับภาพให้ AI เพื่อให้กล่องตรง
+                captureCtx.translate(CAPTURE_SIZE, 0);
+                captureCtx.scale(-1, 1);
+            }
+            
+            // วาดภาพวิดีโอลง Canvas เพื่อส่ง
             captureCtx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight, 0, 0, CAPTURE_SIZE, CAPTURE_SIZE);
+            
+            // รีเซ็ต transform
+            captureCtx.setTransform(1, 0, 0, 1, 0, 0);
 
             captureCanvas.toBlob(async (blob) => {
                 if (!blob) return;
@@ -398,6 +430,7 @@
                     body: formData,
                 });
 
+                // ... (ส่วนการจัดการ Response)
                 if (!response.ok) {
                     const errorText = await response.text();
                     statusElement.textContent = `ข้อผิดพลาด API: เซิร์ฟเวอร์ตอบกลับสถานะ ${response.status} (Backend/ngrok อาจปิดอยู่)`;
@@ -418,13 +451,11 @@
                     return; 
                 }
 
-                // 3. ประมวลผลผลลัพธ์
                 let boxesData;
                 let detectionCount;
                 
                 if (result.status === 'success') { 
                     const detectionsArray = result.detections;
-                    
                     if (detectionsArray && Array.isArray(detectionsArray)) {
                         boxesData = detectionsArray.map(d => ({
                             box: [d.box[0], d.box[1], d.box[2], d.box[3]], 
@@ -433,12 +464,10 @@
                         }));
                         detectionCount = result.detections_count || boxesData.length;
                     } else {
-                        console.warn("API returned status 'success' but detections data is missing or not an Array.", result);
                         boxesData = [];
                         detectionCount = 0;
                     }
                 } else {
-                    console.warn("API response received but status is not 'success'.", result);
                     boxesData = [];
                     detectionCount = 0;
                 }
@@ -470,13 +499,14 @@
         const isReady = await checkBackendConnectivity(); 
         if (isReady) {
             isProcessing = true;
-            startCamera(); 
+            startCamera(currentFacingMode); 
         } else {
             isProcessing = false;
         }
     };
 
     startButton.onclick = startDetectionProcess;
+    cameraSwitchButton.onclick = switchCamera; // 🛠️ NEW: ผูกปุ่มสลับกล้อง
 
     window.onload = async function() {
         statusElement.textContent = "กรุณาเปิดกล้องและเริ่มตรวจจับ";
@@ -485,9 +515,6 @@
 
     window.addEventListener('beforeunload', () => {
         stopDetection();
-        if (stream) {
-            stream.getTracks().forEach(track => track.stop());
-        }
     });
 
     </script>
